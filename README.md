@@ -97,6 +97,46 @@ python port_status_inspection.py --mode consistency
 python port_status_inspection.py --log-dir logs --save-report
 ```
 
+### 核心解析逻辑详解
+
+本工具采用**上下文感知的状态机解析算法**，针对不同厂商设备的输出格式进行精准提取与标准化处理。这是确保基线对比准确性的核心机制。
+
+#### 1. 端口状态标准化 (`parse_dis_int_brief`)
+
+解析器会将不同厂商千差万别的原始输出，统一转换为标准化的状态字典，消除厂商差异：
+
+*   **`admin_status` (管理状态)**: 标识端口是否被管理员手动关闭 (shutdown)。
+    *   **判定逻辑**: 当检测到 `ADM` (H3C) 或 `*down` (Huawei) 时标记为 `DOWN`，否则为 `UP`。
+*   **`line_status` (链路状态)**: 标识端口物理层及协议层是否完全连通。
+    *   **判定逻辑**: 只有当物理状态和协议状态均为 `UP` 时才标记为 `UP`，任何一侧异常均视为 `DOWN`。
+
+#### 2. H3C 设备深度解析 (双模式引擎)
+
+H3C 设备通常将接口分为三层（路由）和二层（桥接）两种视图显示，工具实现了**分模式解析引擎**：
+
+*   **Route Mode (三层接口)**
+    *   **触发条件**: 扫描到 `Brief information on interfaces in route mode:`
+    *   **解析策略**: 重点提取 `Protocol` 和 `Primary IP` 字段。
+    *   **适用对象**: VLAN-interface, Loopback, Route-Aggregation 等。
+    *   **代码实现**: 设置 `current_mode = "route"`，激活三层字段映射表。
+
+*   **Bridge Mode (二层接口)**
+    *   **触发条件**: 扫描到 `Brief information on interfaces in bridge mode:`
+    *   **解析策略**: 重点提取 `Speed`, `Duplex`, `PVID` 等二层属性。
+    *   **适用对象**: GigabitEthernet, Ten-GigabitEthernet 等物理口。
+    *   **代码实现**: 设置 `current_mode = "bridge"`，激活二层字段映射表。
+
+#### 3. Huawei 设备解析 (特性适配)
+
+*   **自动表头识别**: 智能识别华为特有的表头 (`PHY`, `Protocol`, `InUti`, `OutUti`)。
+*   **接口名归一化**: 内置映射表，自动将长接口名转换为简写（例如 `GigabitEthernet` -> `GE`, `Ten-GigabitEthernet` -> `XGE`），确保能与使用简写的基线或命令输出（如 `display interface description`）正确对齐。
+*   **状态清洗**: 自动剥离状态字段中的特殊标记（如 `*down` 清洗为 `down`）。
+
+#### 4. 鲁棒性与兼容设计
+
+*   **智能边界检测**: 通过识别命令回显的起止特征（如命令行提示符 `<...>`），自动锁定 `display interface brief` 的有效输出范围，避免解析到无关的日志噪音。
+*   **自适应降级**: 如果日志中缺失标准的“模式分隔符”（如旧版本固件），解析器会自动降级为通用模式，尝试通过列特征进行模糊匹配，最大程度保证解析成功率。
+
 ---
 
 ## 项目结构
